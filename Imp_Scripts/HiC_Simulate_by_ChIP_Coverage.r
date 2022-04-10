@@ -65,9 +65,9 @@ system(paste("mkdir -p", opt$OutDir))
 
 # bin size
 if (tools::file_ext(opt$HiCMapFile) == "gz") {
-	BinSize <- as.integer(system(paste("zcat", opt$HiCMapFile, " | awk \'{if (NR==2) {print ($3-$2)}}\' - "), intern = TRUE))
+	BinSize <- as.integer(system(paste("gzip -dc", opt$HiCMapFile, " | head | awk \'NR==2{print ($3-$2)}}\'"), intern = TRUE))
 } else {
-	BinSize <- as.integer(system(paste("awk \'{if (NR==2) {print ($3-$2)}}\'", opt$HiCMapFile), intern = TRUE))	
+	BinSize <- as.integer(system(paste("cat ", opt$HiCMapFile, " | head | awk \'NR==2{print ($3-$2)}}\'"), intern = TRUE))	
 }
 
 cat(sprintf("\n\n *** Parameter list ****** \n\n"))
