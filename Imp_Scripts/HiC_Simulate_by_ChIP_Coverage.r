@@ -3,6 +3,7 @@
 library(optparse)
 library(tools)
 library(data.table)
+library(Matrix)
 
 options(scipen=999)
 options(datatable.fread.datatable=FALSE)
@@ -96,10 +97,22 @@ if (tools::file_ext(opt$ChIPAlignFile) == "bam") {
 }
 if (tools::file_ext(opt$ChIPAlignFile) == "gz") {
 	# gzipped bedgraph format
-	system(paste("zcat", opt$ChIPAlignFile, "| bedtools coverage -a", TargetBinnedChrFile, "-b stdin -counts >", MergedChIPCovFile))
+	system(paste("gzip -dc", opt$ChIPAlignFile, "| bedtools coverage -a", TargetBinnedChrFile, "-b stdin -counts >", MergedChIPCovFile))
 } else {
 	# either BAM file or plain bedgraph format
 	system(paste("bedtools coverage -a", TargetBinnedChrFile, "-b", opt$ChIPAlignFile, "-counts >", MergedChIPCovFile))
+}
+
+# very performant version of sweep for sparse matrices
+sweep_sparse <- function(x, margin, stats, fun = "*") {
+   f <- match.fun(fun)
+   if (margin == 1) {
+      idx <- x@i + 1
+   } else {
+      idx <- x@j + 1
+   }
+   x@x <- f(x@x, stats[idx])
+   return(x)
 }
 
 # read the ChIP-seq coverage for the input ChIP-seq data
@@ -122,7 +135,7 @@ for (chrIdx in 1:length(chrnames)) {
 	# 1. bin 1 index 2. bin 2 index 3. raw contact.count
 	HiCInp_BinPair_File <- paste0(opt$OutDir, '/temp_HiC_LocusPair_Dumped_CC.bed')
 	if (tools::file_ext(opt$HiCMapFile) == "gz") {
-		system(paste0("zcat ", opt$HiCMapFile, " | awk \'{print ($3/", BinSize, ")\"\t\"($6/", BinSize, ")\"\t\"$7}\' - > ", HiCInp_BinPair_File))
+		system(paste0("gzip -dc ", opt$HiCMapFile, " | awk \'{print ($3/", BinSize, ")\"\t\"($6/", BinSize, ")\"\t\"$7}\' - > ", HiCInp_BinPair_File))
 	} else {
 		system(paste0("awk \'{print ($3/", BinSize, ")\"\t\"($6/", BinSize, ")\"\t\"$7}\' ", opt$HiCMapFile, " > ", HiCInp_BinPair_File))
 	}
@@ -149,7 +162,7 @@ for (chrIdx in 1:length(chrnames)) {
 
 	# define a symmetric matrix of N X N dimension
 	# to store the regression factors
-	RegrFactorMat <- matrix(0, nrow=N, ncol=N)
+	RegrFactorMat <- Matrix(data=0, nrow=N, ncol=N, sparse=T)
 	cat(sprintf("\n Initialized regression matrix of %s X %s dimension : ", nrow(RegrFactorMat), ncol(RegrFactorMat)))	
 
 	HiCInp_BinPair_Data <- data.table::fread(HiCInp_BinPair_File, header=F, sep="\t", stringsAsFactors=F)
@@ -161,14 +174,15 @@ for (chrIdx in 1:length(chrnames)) {
 	# and the third column is contact count (raw / normalized)
 	rowIdxVec <- HiCInp_BinPair_Data[, 1]
 	colIdxVec <- HiCInp_BinPair_Data[, 2]	
-	ValVec <- HiCInp_BinPair_Data[, 3]
+	ValVec    <- HiCInp_BinPair_Data[, 3]
+        IdxMat    <- cbind(rowIdxVec, colIdxVec)
 
 	# use the following link
 	# http://eamoncaddigan.net/r/programming/2015/10/22/indexing-matrices/
 	# to assign values to matrix locations
 	# wrong method: RegrFactorMat[rowIdxVec, colIdxVec] <- ValVec
 	# right method:
-	RegrFactorMat[rowIdxVec + nrow(RegrFactorMat) * (colIdxVec-1)] <- ValVec
+	RegrFactorMat[IdxMat] <- ValVec
 	cat(sprintf("\n Loaded data in regression matrix of %s X %s dimension : ", nrow(RegrFactorMat), ncol(RegrFactorMat)))
 
 	# define a symmetric matrix - Note: casting in form of a matrix is essential
@@ -176,30 +190,31 @@ for (chrIdx in 1:length(chrnames)) {
 	# RegrFactorMat <- as.matrix(Matrix::forceSymmetric(RegrFactorMat, uplo="U"))
 	# add - sourya
 	# using rows as columns and columns as rows
-	RegrFactorMat[colIdxVec + nrow(RegrFactorMat) * (rowIdxVec-1)] <- ValVec
-	cat(sprintf("\n Made regression coefficient matrix - symmetric - %s X %s dimension : ", nrow(RegrFactorMat), ncol(RegrFactorMat)))
+	#RegrFactorMat[colIdxVec + nrow(RegrFactorMat) * (rowIdxVec-1)] <- ValVec
+	#cat(sprintf("\n Made regression coefficient matrix - symmetric - %s X %s dimension : ", nrow(RegrFactorMat), ncol(RegrFactorMat)))
+        # COMMENT OUT as the matrix is already symmetric.
 
 	# normalize the ChIP coverage vector
 	# such that its mean is 1
-	m <- mean(ChIPCoverageVec)
+	m <- mean(ChIPCoverageVec, na.rm=T)
 	if (m > 0) {
 		ChIPCoverageVec_Norm <- (ChIPCoverageVec / (1.0 * m))
 	}
 
 	# normalize the RegrFactorMat row wise
 	# such that mean of each row is 1
-	r <- rowMeans(RegrFactorMat)
+	r <- rowMeans(RegrFactorMat, na.rm=T)
 	r[r==0] <- 1	# to avoid division by 0 error
-	RegrFactorMat <- sweep(RegrFactorMat, 1, r, "/")	# row wise division by mean values
+	RegrFactorMat <- sweep_sparse(RegrFactorMat, 1, r, "/")	# row wise division by mean values
 
 	#===============
 	# iteration - scale the matrix to have row and column sum = ChIP coverage
 	# alternatively scale the row and column vectors
 	#===============
-	MAX_ITER <- 2	#10	#500	# sourya - modify later
-	Thr <- 0.01		# 0.00001	# iteration stop threshold
-	ThrDiff <- 0.02 	# threshold to track changes of SAD in successive iterations
-	newMat <- matrix(0, nrow=N, ncol=N)	# matrix, to store the current output
+	MAX_ITER <- 500 	# sourya - modify later
+	Thr <- 0.00001	        # iteration stop threshold
+	ThrDiff <- 0.01 	# threshold to track changes of SAD in successive iterations
+	newMat <- Matrix(data=0, nrow=N, ncol=N, sparse=T)	# matrix, to store the current output
 	flag <- FALSE	# flag variable indicating convergence
 
 	for (iter_cnt in c(1:MAX_ITER)) {
@@ -207,20 +222,20 @@ for (chrIdx in 1:length(chrnames)) {
 
 		if ((iter_cnt %% 2) == 1) {
 			# row wise normalization
-			s <- rowSums(RegrFactorMat)
+			s <- rowSums(RegrFactorMat, na.rm=T)
 			s[s==0] <- 1	# to avoid division by 0 error
 			# first multiply with the target ChIP coverage (row wise)
-			newMat <- sweep(RegrFactorMat, 1, ChIPCoverageVec_Norm, "*")
+			newMat <- sweep_sparse(RegrFactorMat, 1, ChIPCoverageVec_Norm, "*")
 			# then normalize with the rowSums (row wise)
-			newMat <- sweep(newMat, 1, s, "/")
+			newMat <- sweep_sparse(newMat, 1, s, "/")
 		} else {
 			# column wise normalization
-			s <- colSums(RegrFactorMat)
+			s <- colSums(RegrFactorMat, na.rm=T)
 			s[s==0] <- 1	# to avoid division by 0 error
 			# first multiply with the target ChIP coverage (row wise)
-			newMat <- sweep(RegrFactorMat, 2, ChIPCoverageVec_Norm, "*")
+			newMat <- sweep_sparse(RegrFactorMat, 2, ChIPCoverageVec_Norm, "*")
 			# then normalize with the colSums (column wise)
-			newMat <- sweep(newMat, 2, s, "/")		
+			newMat <- sweep_sparse(newMat, 2, s, "/")		
 		}
 		cat(sprintf("\n Copied to newmat entries "))
 
@@ -253,14 +268,14 @@ for (chrIdx in 1:length(chrnames)) {
 		RegrFactorMat <- newMat
 
 		# clear newMat
-		newMat[newMat>0] <- 0
+		newMat@x <- rep(0, length(newMat@x))
 
 		# find the correlation between the generated RegrFactorMat
 		# in terms of its row wise coverage
 		# and column wise coverage
 		# with the reference ChIP seq coverage
-		RS <- rowSums(RegrFactorMat)
-		CS <- colSums(RegrFactorMat)
+		RS <- rowSums(RegrFactorMat, na.rm=T)
+		CS <- colSums(RegrFactorMat, na.rm=T)
 		idx1 <- which(!is.na(RS) & !is.na(ChIPCoverageVec))
 		R_corr <- cor(ChIPCoverageVec[idx1], RS[idx1])
 		idx2 <- which(!is.na(CS) & !is.na(ChIPCoverageVec))
@@ -288,15 +303,15 @@ for (chrIdx in 1:length(chrnames)) {
 	# dump the contact map entries after matrix balancing (basically the output RegrFactorMat)
 	# subject to the locus pairs having nonzero HiC contact counts
 	# (specified in rowIdxVec and colIdxVec)
-	OutRegrFactor_Norm <- RegrFactorMat[rowIdxVec + nrow(RegrFactorMat) * (colIdxVec-1)]
+	OutRegrFactor_Norm <- RegrFactorMat[IdxMat]
 
 	# now modify (scale) the entries in RegrFactorMat
 	# according to the specified ChIP coverage in the original ChIPCoverageVec
-	s <- rowSums(RegrFactorMat)
+	s <- rowSums(RegrFactorMat, na.rm=T)
 	s[s==0] <- 1	# to avoid division by 0 error
-	RegrFactorMat <- sweep(RegrFactorMat, 1, s, "/")
-	RegrFactorMat <- sweep(RegrFactorMat, 1, ChIPCoverageVec, "*")
-	OutRegrFactor_Scaled <- RegrFactorMat[rowIdxVec + nrow(RegrFactorMat) * (colIdxVec-1)]
+	RegrFactorMat <- sweep_sparse(RegrFactorMat, 1, s, "/")
+	RegrFactorMat <- sweep_sparse(RegrFactorMat, 1, ChIPCoverageVec, "*")
+	OutRegrFactor_Scaled <- RegrFactorMat[IdxMat]
 
 	# scale the contact count to the total sum of HiChIP reads
 	s1 <- as.integer(opt$TotalRead)
