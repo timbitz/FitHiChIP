@@ -42,6 +42,8 @@ Release notes - Version 10.0 (April 2022)
 	3. Parallel processing is updated. Instead of using mclapply, we use lapply. Some users experienced halt / crash of parallel processing routine.
 
 
+For the earlier release notes, please check the file *Release_Notes.txt*
+
 
 Utility scripts for the manuscript
 ======================================
