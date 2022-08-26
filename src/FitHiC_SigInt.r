@@ -45,11 +45,13 @@ AllPossibleContacts <- function(InpDistSet, binsize, ChrSpecBin.df, IntType) {
 	# this vector stores number of locus pairs for individual genomic distance
 	CountLocusPairDist <- rep(0, length(InpDistSet))
 
-	# number of processors within the system
-	ncore <- detectCores()
+	# # number of processors within the system
+	# ncore <- detectCores()
 
 	# compute all possible locus pairs for individual chromosomes
-	res_chrCntLocPair <- as.data.frame(parallel:::mclapply( 1:length(ChrList_NameNum) , mc.cores = ncore , function(chr_idx){
+	## modification - sourya - use lapply instead of mclapply	
+	# res_chrCntLocPair <- as.data.frame(parallel:::mclapply( 1:length(ChrList_NameNum) , mc.cores = ncore , function(chr_idx){
+	res_chrCntLocPair <- as.data.frame(lapply(1:length(ChrList_NameNum), function(chr_idx){
 
 		# current chromosome name
 		chrName <- ChrList_NameNum[chr_idx]
@@ -194,8 +196,10 @@ Peak2PeakBackg <- as.integer(opt$P2P)
 IntType <- as.integer(opt$IntType)
 
 # number of processors within the system
-ncore <- detectCores()
-cat(sprintf("\n Number of cores in the system: %s ", ncore))
+if (0) {
+	ncore <- detectCores()
+	cat(sprintf("\n Number of cores in the system: %s ", ncore))
+}
 
 # directory containing the input interaction file
 inpdir <- dirname(opt$InpFile)
@@ -795,7 +799,9 @@ if (opt$BiasCorr == 0) {
 			pp <- predict(fit2_new, gene.dist[si])
 			p <- pp$y		
 
-			result_binomdistr <- as.data.frame(parallel:::mclapply( si:ei , mc.cores = ncore , function(idx){
+			## modification - sourya - use lapply instead of mclapply	
+			# result_binomdistr <- as.data.frame(parallel:::mclapply( si:ei , mc.cores = ncore , function(idx){
+			result_binomdistr <- as.data.frame(lapply( si:ei , function(idx){
 				cc <- interaction.data[idx, opt$cccol]
 				# probability by multiplying the bias values
 				pr <- p * interaction.data[idx, bias1.col] * interaction.data[idx, bias2.col]
@@ -830,7 +836,9 @@ if (opt$BiasCorr == 0) {
 
 			time_start <- Sys.time()
 
-			res_Row_Training <- as.data.frame(parallel:::mclapply( 1:length(avg_int_dist) , mc.cores = ncore , function(rownum){
+			## modification - sourya - use lapply instead of mclapply	
+			# res_Row_Training <- as.data.frame(parallel:::mclapply( 1:length(avg_int_dist) , mc.cores = ncore , function(rownum){
+			res_Row_Training <- as.data.frame(lapply( 1:length(avg_int_dist), function(rownum){
 
 				if (rownum == 1) {
 					training_si <- 1
@@ -1209,6 +1217,8 @@ if (opt$BiasCorr == 0) {
 					bias2_val_vec <- as.numeric(interaction.data[si:ei, bias2.col])
 					nonzero_biasidx_set <- which((bias1_val_vec > 0) & (bias2_val_vec > 0)) + (si-1)
 					zero_biasidx_set <- setdiff(seq(si, ei), nonzero_biasidx_set)
+
+					## debug - sourya
 					if (0) {
 						if (opt$BiasType == 1) {
 							cat(sprintf("\n\n ****** Coverage bias regression "))
@@ -1217,11 +1227,12 @@ if (opt$BiasCorr == 0) {
 						}
 						cat(sprintf(" - analyzing locus pairs between indices %s and %s - total elements : %s genomic distance : %s Spline fitted probability (p): %s number of locus pairs with non-zero bias values (and within allowed thresholds) : %s number of locus pairs with zero bias in at least one end, or outside the allowed thresholds : %s ", si, ei, (ei-si+1), gene.dist[si], p, length(nonzero_biasidx_set), length(zero_biasidx_set)))
 					}
+
 					# if one of the bias values are zero
 					# then just use the spline predicted probability as the estimated distance
 					if (length(zero_biasidx_set) > 0) {
 						Exp_CC_BiasRegr[zero_biasidx_set] <- (TotContact * p)	
-						if (0) {
+						if (1) {
 							cat(sprintf("\n *** for locus pairs with zero bias in at least one end (or bias values outside very high thresholds) - assigning expected contact count value : %s ", (TotContact * p)))
 						}
 					}					
@@ -1254,7 +1265,7 @@ if (opt$BiasCorr == 0) {
 			}
 
 			time_end <- Sys.time()
-			if (0) {
+			if (1) {
 				cat(sprintf("\n\n\n ==>>> modeled the bias regression -- time: %s \n\n", (time_end - time_start)))
 			}
 
@@ -1297,16 +1308,20 @@ if (opt$BiasCorr == 0) {
 					ei <- numPairs	# last read	
 				}
 
-				if (0) {
+				## debug - sourya
+				if (1) {
 					cat(sprintf("\n *** Modeling regression bias probability based P value --- uniq distance idx: %s  si: %s  ei: %s num elem : %s ", k, si, ei, (ei-si+1)))
 				}
 
 				# parallel processing
-				resbias <- as.data.frame(parallel:::mclapply( si:ei , mc.cores = ncore , function(idx){
+				## modification - sourya - use lapply instead of mclapply	
+				# resbias <- as.data.frame(parallel:::mclapply( si:ei , mc.cores = ncore , function(idx){
+				resbias <- as.data.frame(lapply( si:ei, function(idx){
 					curr_cc <- interaction.data[idx, opt$cccol]
 					pr_bias <- (Exp_CC_BiasRegr[idx] * 1.0) / ExpTotContact
 					db2 <- dbinom(curr_cc, size=ExpTotContact, prob=pr_bias)
 					pb2 <- pbinom(curr_cc, size=ExpTotContact, prob=pr_bias, lower.tail=FALSE)
+					## debug - sourya
 					if (0) {
 						cat(sprintf("\n idx : %s curr_cc: %s  pr_bias : %s  db2 : %s  pb2: %s ", idx, curr_cc, pr_bias, db2, pb2))
 					}
@@ -1387,7 +1402,9 @@ if (opt$BiasCorr == 0) {
 			# parallel processing - sourya
 			time_start <- Sys.time()	# debug - souya
 
-			res_Row_Training <- as.data.frame(parallel:::mclapply( 1:length(uniq.Training.idx) , mc.cores = ncore , function(k){
+			## modification - sourya - use lapply instead of mclapply	
+			# res_Row_Training <- as.data.frame(parallel:::mclapply( 1:length(uniq.Training.idx) , mc.cores = ncore , function(k){
+			res_Row_Training <- as.data.frame(lapply( 1:length(uniq.Training.idx) , function(k){
 
 				# all the locations from training_si to training_ei will have the same probability 
 				# since the gene distance value is the same
@@ -1711,7 +1728,9 @@ if (opt$BiasCorr == 0) {
 				}
 
 				# parallel processing
-				resbias <- as.data.frame(parallel:::mclapply( si:ei , mc.cores = ncore , function(idx){
+				## modification - sourya - use lapply instead of mclapply	
+				# resbias <- as.data.frame(parallel:::mclapply( si:ei , mc.cores = ncore , function(idx){
+				resbias <- as.data.frame(lapply( si:ei , function(idx){
 					curr_cc <- interaction.data[idx, opt$cccol]
 					pr_bias <- (Exp_CC_BiasRegr[idx] * 1.0) / ExpTotContact
 					db2 <- dbinom(curr_cc, size=ExpTotContact, prob=pr_bias)
